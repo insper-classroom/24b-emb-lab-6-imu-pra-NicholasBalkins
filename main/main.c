@@ -19,7 +19,7 @@
 #define MAX_OUTPUT 250
 #define MAX_ROLL_YAW_ANGLE 90.0f
 #define DEADZONE_THRESHOLD 1.0f
-#define CLICK_THRESHOLD 500.0f  // Reduzido para maior sensibilidade
+#define CLICK_THRESHOLD 500.0f
 #define ALPHA 0.75f
 
 #define MPU_ADDRESS 0x68
@@ -34,17 +34,13 @@ typedef struct {
 QueueHandle_t xQueueMouse;
 FusionVector gyro_offset = {0.0f, 0.0f, 0.0f};
 
-// Função para resetar o MPU6050
 static void mpu6050_reset() {
     uint8_t buf[] = {0x6B, 0x00};
     i2c_write_blocking(i2c_default, MPU_ADDRESS, buf, 2, false);
 }
 
-// Função para ler dados brutos do MPU6050
 static void mpu6050_read_raw(int16_t accel[3], int16_t gyro[3], int16_t *temp) {
     uint8_t buffer[6];
-
-    // Leitura do acelerômetro
     uint8_t reg = 0x3B;
     i2c_write_blocking(i2c_default, MPU_ADDRESS, &reg, 1, true);
     i2c_read_blocking(i2c_default, MPU_ADDRESS, buffer, 6, false);
@@ -52,7 +48,6 @@ static void mpu6050_read_raw(int16_t accel[3], int16_t gyro[3], int16_t *temp) {
         accel[i] = (buffer[i * 2] << 8) | buffer[(i * 2) + 1];
     }
 
-    // Leitura do giroscópio
     reg = 0x43;
     i2c_write_blocking(i2c_default, MPU_ADDRESS, &reg, 1, true);
     i2c_read_blocking(i2c_default, MPU_ADDRESS, buffer, 6, false);
@@ -61,7 +56,6 @@ static void mpu6050_read_raw(int16_t accel[3], int16_t gyro[3], int16_t *temp) {
     }
 }
 
-// Função para escalar o valor com base no ângulo máximo permitido
 int16_t scale_value(float value, float max_angle) {
     if (value > -DEADZONE_THRESHOLD && value < DEADZONE_THRESHOLD) {
         return 0;
@@ -72,27 +66,23 @@ int16_t scale_value(float value, float max_angle) {
     return (int16_t)scaled_value;
 }
 
-// Função para suavizar o valor (fator ajustado para maior precisão)
 float smooth_value(float current_value, float previous_value) {
     return (ALPHA * previous_value) + ((1.0f - ALPHA) * current_value);
 }
 
-// Função para calcular a magnitude da aceleração
-float calculate_acceleration_magnitude(int16_t accel[3]) {
+float calculate_acceleration_magnitude(const int16_t accel[3]) {
     return sqrtf(accel[0] * accel[0] + accel[1] * accel[1] + accel[2] * accel[2]);
 }
 
-// Função para enviar dados via UART
 void send_uart_data(MouseData data) {
     uint8_t msb = (data.value >> 8) & 0xFF;
     uint8_t lsb = data.value & 0xFF;
-    uart_putc(UART_ID, data.axis);  // Envia 0 para X (Roll), 1 para Y (Yaw), 2 para clique
-    uart_putc(UART_ID, msb);        // Byte mais significativo
-    uart_putc(UART_ID, lsb);        // Byte menos significativo
-    uart_putc(UART_ID, 0xFF);       // Fim do pacote
+    uart_putc(UART_ID, data.axis);
+    uart_putc(UART_ID, msb);
+    uart_putc(UART_ID, lsb);
+    uart_putc(UART_ID, 0xFF);
 }
 
-// Função para calibrar o giroscópio
 void calibrate_gyro(FusionVector *gyro_offset) {
     int16_t acceleration[3], gyro[3], temp;
     int samples = 500;
@@ -111,7 +101,6 @@ void calibrate_gyro(FusionVector *gyro_offset) {
     gyro_offset->axis.z = sum.axis.z / samples;
 }
 
-// Task para ler o MPU6050 e calcular Roll, Yaw e detectar clique
 void mpu6050_task(void *p) {
     i2c_init(i2c_default, 400 * 1000);
     gpio_set_function(I2C_SDA_GPIO, GPIO_FUNC_I2C);
@@ -126,10 +115,7 @@ void mpu6050_task(void *p) {
     FusionAhrsInitialise(&ahrs);
     calibrate_gyro(&gyro_offset);
 
-    float roll_smooth = 0.0f;
-    float yaw_smooth = 0.0f;
-
-    int click_status = 0;  // Status do clique
+    int click_status = 0;
 
     while (1) {
         mpu6050_read_raw(acceleration, gyro, &temp);
@@ -147,31 +133,29 @@ void mpu6050_task(void *p) {
         FusionAhrsUpdateNoMagnetometer(&ahrs, gyroscope, accelerometer, SAMPLE_PERIOD);
         FusionEuler euler = FusionQuaternionToEuler(FusionAhrsGetQuaternion(&ahrs));
 
-        roll_smooth = euler.angle.roll;  // Movimentos agora mais responsivos
-        yaw_smooth = euler.angle.yaw;
+        float roll_smooth = euler.angle.roll;
+        float yaw_smooth = euler.angle.yaw;
 
         MouseData rollData = {0, scale_value(roll_smooth, MAX_ROLL_YAW_ANGLE)};
         MouseData yawData = {1, scale_value(yaw_smooth, MAX_ROLL_YAW_ANGLE)};
         xQueueSend(xQueueMouse, &rollData, portMAX_DELAY);
         xQueueSend(xQueueMouse, &yawData, portMAX_DELAY);
 
-        // Detecta clique com base na magnitude da aceleração
         float accel_magnitude = calculate_acceleration_magnitude(acceleration);
         if (accel_magnitude > CLICK_THRESHOLD && click_status == 0) {
-            MouseData clickData = {2, 1};  // 1 indica clique
+            MouseData clickData = {2, 1};
             xQueueSend(xQueueMouse, &clickData, portMAX_DELAY);
-            click_status = 1;  // Clique foi detectado
+            click_status = 1;
         } else if (accel_magnitude <= CLICK_THRESHOLD && click_status == 1) {
-            MouseData clickData = {2, 0};  // 0 indica que o clique foi liberado
+            MouseData clickData = {2, 0};
             xQueueSend(xQueueMouse, &clickData, portMAX_DELAY);
-            click_status = 0;  // Clique foi liberado
+            click_status = 0;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10));  // Menor atraso para maior responsividade
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
-// Task para enviar os dados via UART
 void uart_task(void *p) {
     MouseData data;
 
